@@ -32,5 +32,17 @@ module Syck
       assert_equal "n", Syck.load("--- n")
       assert_equal "N", Syck.load("--- N")
     end
+
+    ###
+    # https://github.com/ruby/syck/issues/22
+    # A boolean-like prefix followed by a non-ASCII byte must not be
+    # matched as a boolean
+    def test_bool_prefix_with_non_ascii
+      assert_equal "Noémie", Syck.load("--- Noémie")
+      assert_equal ["Noémie"], Syck.load("--- [Noémie]")
+      assert_equal "Yeså", Syck.load("--- Yeså")
+      assert_equal "trueé", Syck.load("--- trueé")
+      assert_equal "nullé", Syck.load("--- nullé")
+    end
   end
 end
