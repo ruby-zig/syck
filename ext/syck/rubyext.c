@@ -13,29 +13,6 @@
 #include <sys/types.h>
 #include <time.h>
 
-typedef struct RVALUE {
-    union {
-#if 0
-    struct {
-        unsigned long flags;    /* always 0 for freed obj */
-        struct RVALUE *next;
-    } free;
-#endif
-    struct RBasic  basic;
-    struct RObject object;
-    /*struct RClass  klass;*/
-    /*struct RFloat  flonum;*/
-    /*struct RString string;*/
-    struct RArray  array;
-    /*struct RRegexp regexp;*/
-    /*struct RHash   hash;*/
-    /*struct RData   data;*/
-    /*struct RStruct rstruct;*/
-    /*struct RBignum bignum;*/
-    /*struct RFile   file;*/
-    } as;
-} RVALUE;
-
 typedef struct {
    long hash;
    char *buffer;
@@ -705,6 +682,99 @@ yaml_org_handler( SyckNode *n, VALUE *ref )
 }
 
 static void syck_node_mark( SyckNode *n );
+static VALUE id_hash_new(void);
+
+/*
+ * Rewrite every reference to `from` inside `obj` so it points at `to`.
+ *
+ * A self-referential anchor (`--- &a\n- *a\n`) is aliased before the anchored
+ * node is finished, so the parser hands out a BadAlias placeholder and only
+ * later learns which object the anchor really is.  Only containers can hold a
+ * placeholder, so the walk stops at anything else.  `seen` must compare by
+ * identity, otherwise equal-but-distinct nodes collapse and cycles that are
+ * already in place would recurse forever.
+ */
+static void
+syck_swap_placeholder(VALUE obj, VALUE from, VALUE to, VALUE seen)
+{
+    long i;
+    VALUE ivars;
+
+    if ( SPECIAL_CONST_P( obj ) || OBJ_FROZEN( obj ) ) return;
+
+    switch ( BUILTIN_TYPE( obj ) )
+    {
+        case T_ARRAY:
+        case T_HASH:
+        case T_STRUCT:
+        case T_OBJECT:
+        break;
+
+        default:
+        return;
+    }
+
+    if ( RTEST( rb_hash_lookup( seen, obj ) ) ) return;
+    rb_hash_aset( seen, obj, Qtrue );
+
+    switch ( BUILTIN_TYPE( obj ) )
+    {
+        case T_ARRAY:
+            for ( i = 0; i < RARRAY_LEN( obj ); i++ )
+            {
+                VALUE v = rb_ary_entry( obj, i );
+                if ( v == from ) rb_ary_store( obj, i, to );
+                else syck_swap_placeholder( v, from, to, seen );
+            }
+        break;
+
+        case T_HASH:
+        {
+            VALUE keys = rb_funcall( obj, s_keys, 0 );
+            for ( i = 0; i < RARRAY_LEN( keys ); i++ )
+            {
+                VALUE key = rb_ary_entry( keys, i );
+                VALUE val = rb_hash_aref( obj, key );
+
+                if ( key == from || val == from )
+                {
+                    VALUE new_key = key == from ? to : key;
+                    VALUE new_val = val == from ? to : val;
+
+                    if ( new_key != key ) rb_hash_delete( obj, key );
+                    rb_hash_aset( obj, new_key, new_val );
+                    key = new_key;
+                    val = new_val;
+                }
+
+                syck_swap_placeholder( key, from, to, seen );
+                syck_swap_placeholder( val, from, to, seen );
+            }
+        }
+        break;
+
+        case T_STRUCT:
+            for ( i = 0; i < RSTRUCT_LEN( obj ); i++ )
+            {
+                VALUE v = rb_struct_aref( obj, LONG2NUM( i ) );
+                if ( v == from ) rb_struct_aset( obj, LONG2NUM( i ), to );
+                else syck_swap_placeholder( v, from, to, seen );
+            }
+        break;
+
+        default:
+        break;
+    }
+
+    ivars = rb_obj_instance_variables( obj );
+    for ( i = 0; i < RARRAY_LEN( ivars ); i++ )
+    {
+        ID name = SYM2ID( rb_ary_entry( ivars, i ) );
+        VALUE v = rb_ivar_get( obj, name );
+        if ( v == from ) rb_ivar_set( obj, name, to );
+        else syck_swap_placeholder( v, from, to, seen );
+    }
+}
 
 /*
  * {native mode} node handler
@@ -738,13 +808,19 @@ rb_syck_load_handler(SyckParser *p, SyckNode *n)
     DATA_PTR( node_wrapper ) = NULL;
 
     /*
-     * ID already set, let's alter the symbol table to accept the new object
+     * A placeholder was handed out for this node while it was still being
+     * parsed.  Syck used to fuse the two by copying the real object over the
+     * placeholder's heap slot, which is wrong on every count the GC cares
+     * about: the slot is sized for the placeholder, the copied flags carry
+     * the source object's age bits, no write barrier fires, and zeroing the
+     * source turns a live object into T_NONE behind the GC's back.  The heap
+     * then stays corrupted until some unrelated allocation crashes.  Rewrite
+     * the references instead.
      */
     if (n->id > 0 && !NIL_P(obj))
     {
-        MEMCPY((void *)n->id, (void *)obj, RVALUE, 1);
-        MEMZERO((void *)obj, RVALUE, 1);
-        obj = n->id;
+        syck_swap_placeholder( obj, (VALUE)n->id, obj, id_hash_new() );
+        n->id = obj;
     }
 
     if ( bonus->taint)      OBJ_TAINT( obj );
