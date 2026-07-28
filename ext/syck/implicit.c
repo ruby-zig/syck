@@ -11,7 +11,7 @@
 #include "ruby/ruby.h"
 #include "syck.h"
 
-#define YYCTYPE     char
+#define YYCTYPE     unsigned char
 #define YYCURSOR    cursor
 #define YYMARKER    marker
 #define YYLIMIT     limit
