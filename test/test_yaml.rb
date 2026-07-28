@@ -1338,6 +1338,40 @@ EOY
     end
 
     #
+    # A self-referential anchor is aliased before the anchored node exists, so
+    # the parser hands out a placeholder and patches it up afterwards.  That
+    # used to be done by overwriting the placeholder's heap slot, which left
+    # the GC heap corrupted and crashed at some later allocation.
+    #
+    def test_self_referential_anchor
+        [ 1, 3, 6, 50 ].each do |n|
+            seq = Syck::load( "--- &id001\n" + "- *id001\n" * n )
+            assert_equal( n, seq.size )
+            seq.each { |item| assert_same( seq, item ) }
+        end
+
+        map = Syck::load( "--- &id001\nself: *id001\n" )
+        assert_same( map, map["self"] )
+
+        keyed = Syck::load( "--- &id001\n? *id001\n: 1\n" )
+        assert_same( keyed, keyed.keys.first )
+
+        # The alias appears as a key and again below the matching value, so
+        # rewriting the key must not stop the walk from reaching the rest.
+        both = Syck::load( "--- &id001\n? *id001\n: \n  - *id001\n" )
+        key, value = both.first
+        assert_same( both, key )
+        assert_same( both, value[0] )
+
+        nested = Syck::load( "--- &id001\n- &id002\n  - *id001\n- *id002\n" )
+        assert_same( nested, nested[0][0] )
+        assert_same( nested[0], nested[1] )
+
+        GC.start
+        assert_nothing_raised { GC.verify_internal_consistency }
+    end
+
+    #
     # Test Symbol cycle
     #
     def test_symbol_cycle
