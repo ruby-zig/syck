@@ -148,6 +148,8 @@ rb_syck_compile(VALUE self, VALUE port)
     SYMID oid;
     int taint;
     char *ret;
+    long blen;
+    VALUE ret_v;
     VALUE bc;
     bytestring_t *sav = NULL;
     void *data = NULL;
@@ -164,14 +166,15 @@ rb_syck_compile(VALUE self, VALUE port)
     }
     sav = data;
 
-    ret = S_ALLOCA_N( char, strlen( sav->buffer ) + 3 );
-    ret[0] = '\0';
-    strcat( ret, "D\n" );
-    strcat( ret, sav->buffer );
+    blen = (long)strlen( sav->buffer );
+    ret = ALLOCV_N( char, ret_v, blen + 3 );
+    memcpy( ret, "D\n", 2 );
+    memcpy( ret + 2, sav->buffer, (size_t)blen + 1 );
 
     syck_free_parser( parser );
 
-    bc = rb_str_new2( ret );
+    bc = rb_str_new( ret, blen + 2 );
+    ALLOCV_END( ret_v );
     if ( taint )      OBJ_TAINT( bc );
     return bc;
 }
@@ -1213,13 +1216,17 @@ syck_set_ivars(
 )
 {
     VALUE ivname = rb_ary_entry( vars, 0 );
+    VALUE ivn_v;
     char *ivn;
+    long ivn_len;
     StringValue( ivname );
-    ivn = S_ALLOCA_N( char, RSTRING_LEN(ivname) + 2 );
+    ivn_len = RSTRING_LEN(ivname);
+    ivn = ALLOCV_N( char, ivn_v, ivn_len + 2 );
     ivn[0] = '@';
-    ivn[1] = '\0';
-    strncat( ivn, RSTRING_PTR(ivname), RSTRING_LEN(ivname) );
+    memcpy( ivn + 1, RSTRING_PTR(ivname), (size_t)ivn_len );
+    ivn[ivn_len + 1] = '\0';
     rb_iv_set( obj, ivn, rb_ary_entry( vars, 1 ) );
+    ALLOCV_END( ivn_v );
     return Qnil;
 }
 
