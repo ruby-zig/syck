@@ -149,7 +149,6 @@ rb_syck_compile(VALUE self, VALUE port)
     int taint;
     char *ret;
     long blen;
-    VALUE ret_v;
     VALUE bc;
     bytestring_t *sav = NULL;
     void *data = NULL;
@@ -162,19 +161,25 @@ rb_syck_compile(VALUE self, VALUE port)
     syck_parser_taguri_expansion( parser, 0 );
     oid = syck_parse( parser );
     if (!syck_lookup_sym( parser, oid, &data )) {
+	syck_free_parser( parser );
 	rb_raise(rb_eSyntaxError, "root node <%p> not found", (void *)oid);
     }
     sav = data;
 
-    blen = (long)strlen( sav->buffer );
-    ret = ALLOCV_N( char, ret_v, blen + 3 );
-    memcpy( ret, "D\n", 2 );
-    memcpy( ret + 2, sav->buffer, (size_t)blen + 1 );
-
+    /*
+     * Steal the buffer from the parser's symbol table (S_FREE ignores
+     * the NULLed pointer) so the parser can be freed before rb_str_new,
+     * which may raise and would otherwise leak the parser.
+     */
+    ret = sav->buffer;
+    sav->buffer = NULL;
     syck_free_parser( parser );
 
-    bc = rb_str_new( ret, blen + 2 );
-    ALLOCV_END( ret_v );
+    blen = (long)strlen( ret );
+    bc = rb_str_new( 0, blen + 2 );
+    memcpy( RSTRING_PTR(bc), "D\n", 2 );
+    memcpy( RSTRING_PTR(bc) + 2, ret, (size_t)blen );
+    S_FREE( ret );
     if ( taint )      OBJ_TAINT( bc );
     return bc;
 }
